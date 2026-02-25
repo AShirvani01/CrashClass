@@ -49,7 +49,7 @@ class CBParams(BaseModel):
     ScalePosWeight: ClassVar[type] = PositiveFloat
 
     # Params
-    objective: Objective = 'Focal'
+    objective: Objective = 'LDAM'
     eval_metric: EvalMetric = 'PRAUC:use_weights=false'
     depth: Depth | tuple[Depth, Depth] | list[Depth] = (6, 10)
     l2_leaf_reg: L2LeafReg | tuple[L2LeafReg, L2LeafReg] | list[L2LeafReg] = (0., 1000.)
@@ -58,7 +58,7 @@ class CBParams(BaseModel):
     scale_pos_weight: ScalePosWeight | tuple[ScalePosWeight, ScalePosWeight] | list[ScalePosWeight] = 6.
 
     # Custom Loss Params
-    LDAM_c: NonNegativeFloat | tuple[NonNegativeFloat, NonNegativeFloat] = (1.0, 10.0)
+    LDAM_c: NonNegativeFloat | tuple[NonNegativeFloat, NonNegativeFloat] = 1.0
     Focal_gamma: NonNegativeFloat | tuple[NonNegativeFloat, NonNegativeFloat] = (1.0, 3.0)
     LA_tau: NonNegativeFloat = 1.0
 

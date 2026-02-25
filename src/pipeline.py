@@ -1,7 +1,12 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import PrecisionRecallDisplay
+from sklearn.calibration import CalibrationDisplay
+from netcal.scaling import LogisticCalibration
+from netcal.metrics import ECE
 from scipy.special import expit
 import catboost as cb
 import xgboost as xgb
@@ -9,6 +14,10 @@ import lightgbm as lgb
 import optuna
 from typing import Callable
 from time import time
+import shap
+import gower
+from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.spatial.distance import squareform
 
 
 from data import (
@@ -136,13 +145,31 @@ class CrashClassPipeline:
             return
         self.collisions.to_csv(save_path / 'processed_data.csv', index=False)
 
-    def _split_data(self, test_size=0.2, seed=42):
+    def _split_data(self, split_ratio=(0.8, 0.1, 0.1), seed=42):
         X = self.collisions.drop(columns='ACCLASS')
         y = self.collisions['ACCLASS']
 
-        split = train_test_split(X, y, test_size=test_size, random_state=seed,
-                                 stratify=y)
-        self.X_train, self.X_test, self.y_train, self.y_test = split
+        train_ratio, val_ratio, test_ratio = split_ratio
+
+        X_train, X_tmp, y_train, y_tmp = train_test_split(
+            X, y,
+            train_size=train_ratio,
+            stratify=y,
+            random_state=seed
+        )
+
+        val_frac = val_ratio / (val_ratio + test_ratio)
+
+        X_val, X_test, y_val, y_test = train_test_split(
+            X_tmp, y_tmp,
+            train_size=val_frac,
+            stratify=y_tmp,
+            random_state=seed
+        )
+
+        self.X_train, self.y_train = X_train, y_train
+        self.X_val, self.y_val = X_val, y_val
+        self.X_test, self.y_test = X_test, y_test
 
     def _train_model_with_catboost(self, n_trials: int):
 
@@ -358,12 +385,12 @@ class CrashClassPipeline:
 
     def load_model(self, file_name: str, algorithm: Algorithm, file_path: Path = MODEL_DIR):
         if algorithm == Algorithm.XGBOOST:
-            model = xgb.Booster(file_path / file_name)
+            model = xgb.Booster(model_file=file_path / file_name)
         elif algorithm == Algorithm.CATBOOST:
             model = cb.CatBoostClassifier()
             model.load_model(file_path / file_name, format='json')
         elif algorithm == Algorithm.LIGHTGBM:
-            model = lgb.Booster(file_path / file_name)
+            model = lgb.Booster(model_file=file_path / file_name)
 
         self.model = model
 
@@ -384,6 +411,52 @@ class CrashClassPipeline:
         metrics, self.confusion_matrix = get_metrics(self.y_test.values, y_test_proba, self.threshold)
         self.metrics = pd.DataFrame(metrics, index=[0])
 
+    def calibrate(self, n_bins=10, file_name: str = None, file_path: Path = MODEL_DIR):
+        confidences = self.model.predict_proba(self.X_val)
+        ground_truth = self.y_val.to_numpy()
 
-if __name__ == '__main__':
-    pipeline = CrashClassPipeline()
+        lc = LogisticCalibration()
+        lc.fit(confidences, ground_truth)
+        if file_name is not None:
+            lc.save_model(f"{file_path}/{file_name}")  #pt file
+        
+        test_confidences = self.model.predict_proba(self.X_test)
+        calibrated = lc.transform(confidences)
+        test_calibrated = lc.transform(test_confidences)
+        test_truth = self.y_test.to_numpy()
+        
+        CalibrationDisplay.from_predictions(test_truth, test_calibrated, n_bins=n_bins, strategy='quantile', name='Final Model')
+        plt.grid()
+        plt.xlim(0, 0.4)
+        plt.ylim(0, 0.4)
+        plt.xlabel('Predicted fatality risk')
+        plt.ylabel('Observed fatality risk')
+        plt.show()
+
+        self.test_calibrated = test_calibrated
+        ece = ECE(n_bins)
+        self.uncalibrated_ece = ece.measure(confidences, ground_truth)
+        self.calibrated_ece = ece.measure(calibrated, ground_truth)
+        self.test_calibrated_ece = ece.measure(test_calibrated, test_truth)
+        
+        self.threshold = get_optimal_threshold(ground_truth, calibrated)
+        metrics, self.confusion_matrix = get_metrics(self.y_test.values, test_calibrated, self.threshold)
+        self.metrics = pd.DataFrame(metrics, index=[0])
+        
+    def dca(self):
+        thresholds = np.linspace(0.01, 0.2, 100)
+
+        nb_model = decision_curve(self.y_test, self.test_calibrated, thresholds)
+        
+        prevalence = self.y_test.to_numpy().mean()
+        nb_all = prevalence - (1-prevalence)*(thresholds/(1-thresholds))
+        nb_none = np.zeros_like(thresholds)
+        
+        plt.plot(thresholds*100, nb_model, label='Model')
+        plt.plot(thresholds*100, nb_all, label='Intervention for all')
+        plt.plot(thresholds*100, nb_none, label='Intervention for none', linestyle='--')
+        plt.ylim(-0.01,0.15)
+        plt.xlabel('Threshold Probability (%)')
+        plt.ylabel('Net Benefit')
+        plt.legend()
+        plt.show()

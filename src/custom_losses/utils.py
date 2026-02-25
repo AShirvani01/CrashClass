@@ -6,6 +6,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import *
 import numpy as np
 import scipy.optimize as opt
+from scipy.signal import savgol_filter
 
 
 def is_max_optimal(metric: str) -> bool:
@@ -101,6 +102,7 @@ def get_optimal_threshold(y_train, y_train_proba):
 
     return np.mean(thresholds)
 
+
 def get_metrics(y_test, y_test_proba, optimal_threshold):
 
     test_preds = (y_test_proba >= optimal_threshold).astype(int)
@@ -113,9 +115,33 @@ def get_metrics(y_test, y_test_proba, optimal_threshold):
         'pre': precision_score(y_test, test_preds),
         'rec': recall_score(y_test, test_preds),
         'f1': f1_score(y_test, test_preds),
-        'mcc': matthews_corrcoef(y_test, test_preds)
+        'mcc': matthews_corrcoef(y_test, test_preds),
+        'brier': brier_score_loss(y_test, y_test_proba)
     }
 
     cm = confusion_matrix(y_test, test_preds)
 
     return metrics, cm
+
+
+def decision_curve(y_true, y_prob, thresholds):
+    """
+    y_true: array of 0/1 outcomes
+    y_prob: predicted probabilities
+    thresholds: array of threshold probabilities
+    """
+    N = len(y_true)
+    net_benefit = []
+
+    for pt in thresholds:
+        preds = (y_prob >= pt).astype(int)
+
+        TP = np.sum((preds == 1) & (y_true == 1))
+        FP = np.sum((preds == 1) & (y_true == 0))
+
+        nb = (TP/N) - (FP/N)*(pt/(1-pt))
+        net_benefit.append(nb)
+
+    return savgol_filter(np.array(net_benefit), 51, 2)
+
+
