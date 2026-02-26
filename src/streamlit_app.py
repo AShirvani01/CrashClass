@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import torch
 from config import (
     DATA_DIR,
     MODEL_DIR,
@@ -62,7 +61,6 @@ model.load_model(MODEL_DIR / 'final_model.json', format='json')
 lc = LogisticCalibration()
 lc.load_model(MODEL_DIR / 'final_calibration.pt')
 explainer = shap.TreeExplainer(model)
-
 
 
 def prepare_input(data: dict, features: list):
@@ -297,7 +295,6 @@ with st.form('enhanced_validation'):
         st.session_state.user_data.update(invage)
         st.session_state.user_data.update(checkboxes)
 
-
         validations = [
             validate_neighbourhood(),
             validate_district(),
@@ -314,12 +311,11 @@ with st.form('enhanced_validation'):
             st.write(f'Probability of at least 1 fatality: {calibrated[0]*100:.2f}%')
             shap_values = explainer(input_df)
             st_shap(shap.plots.waterfall(shap_values[0]), height=600, width=1000)
-            st.markdown('''$f(x)$ is the log-odds *before* calibration.\\
+            st.markdown("""$f(x)$ is the log-odds *before* calibration.\\
                         $E[f(X)]$ is the average log-odds *before* calibration.\\
                         ***Note***: *The waterfall plot is for general interpretation of the risk estimate.\\
                         Focus should be on relative magnitude and direction of effects,
-                        rather than absolute magnitude.*''')
-                     
+                        rather than absolute magnitude.*""")
 
             create_sidebar(st.session_state.user_data)
 
