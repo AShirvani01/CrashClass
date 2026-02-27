@@ -53,7 +53,7 @@ cat_cols = df.select_dtypes('object').columns
 df[cat_cols] = df[cat_cols].apply(lambda x: x.astype('category'))
 hoods = load_external_data(NEIGHBOURHOODS_PATH)
 hospitals = (
-    load_external_data(HEALTH_SERVICES_PATH)
+    gpd.read_file(HEALTH_SERVICES_PATH).to_crs('EPSG:2958')
     .pipe(filter_toronto_hospitals_with_er)
 )
 model = cb.CatBoostClassifier()

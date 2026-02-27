@@ -9,5 +9,4 @@ folium
 streamlit_folium
 geopandas
 shapely
-arcgis
 -e .
