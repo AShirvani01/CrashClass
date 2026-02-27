@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import PrecisionRecallDisplay
 from sklearn.calibration import CalibrationDisplay
 from netcal.scaling import LogisticCalibration
 from netcal.metrics import ECE
@@ -14,10 +13,6 @@ import lightgbm as lgb
 import optuna
 from typing import Callable
 from time import time
-import shap
-import gower
-from scipy.cluster.hierarchy import linkage, dendrogram
-from scipy.spatial.distance import squareform
 
 
 from data import (
@@ -28,16 +23,14 @@ from data import (
     download_streets_data,
     download_neighbourhood_data
 )
-from config import (
+from config.paths import (
     HEALTH_SERVICES_PATH,
     STREETS_PATH,
     NEIGHBOURHOODS_PATH,
     DATA_DIR,
-    MODEL_DIR,
-    CBModelConfig,
-    XGBModelConfig,
-    LGBModelConfig
+    MODEL_DIR
 )
+from config.models import CBModelConfig, XGBModelConfig, LGBModelConfig
 from constants import FEATURES_TO_DROP, CAT_FEATURES, Algorithm
 from preprocessing import *
 
@@ -419,12 +412,12 @@ class CrashClassPipeline:
         lc.fit(confidences, ground_truth)
         if file_name is not None:
             lc.save_model(f"{file_path}/{file_name}")  #pt file
-        
+
         test_confidences = self.model.predict_proba(self.X_test)
         calibrated = lc.transform(confidences)
         test_calibrated = lc.transform(test_confidences)
         test_truth = self.y_test.to_numpy()
-        
+
         CalibrationDisplay.from_predictions(test_truth, test_calibrated, n_bins=n_bins, strategy='quantile', name='Final Model')
         plt.grid()
         plt.xlim(0, 0.4)
@@ -438,11 +431,11 @@ class CrashClassPipeline:
         self.uncalibrated_ece = ece.measure(confidences, ground_truth)
         self.calibrated_ece = ece.measure(calibrated, ground_truth)
         self.test_calibrated_ece = ece.measure(test_calibrated, test_truth)
-        
+
         self.threshold = get_optimal_threshold(ground_truth, calibrated)
         metrics, self.confusion_matrix = get_metrics(self.y_test.values, test_calibrated, self.threshold)
         self.metrics = pd.DataFrame(metrics, index=[0])
-        
+
     def dca(self):
         thresholds = np.linspace(0.01, 0.2, 100)
 

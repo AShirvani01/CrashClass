@@ -1,12 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from config import (
-    DATA_DIR,
-    MODEL_DIR,
-    NEIGHBOURHOODS_PATH,
-    HEALTH_SERVICES_PATH
-)
 import catboost as cb
 from netcal.scaling import LogisticCalibration
 import shap
@@ -15,6 +9,12 @@ import folium as fl
 from streamlit_folium import st_folium
 import geopandas as gpd
 from shapely.geometry import Point
+from config.paths import (
+    DATA_DIR,
+    MODEL_DIR,
+    NEIGHBOURHOODS_PATH,
+    HEALTH_SERVICES_PATH
+)
 from preprocessing import (
     dist_to_nearest_hospital,
     filter_toronto_hospitals_with_er

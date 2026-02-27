@@ -143,5 +143,3 @@ def decision_curve(y_true, y_prob, thresholds):
         net_benefit.append(nb)
 
     return savgol_filter(np.array(net_benefit), 51, 2)
-
-

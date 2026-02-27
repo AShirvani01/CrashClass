@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from arcgis import GIS
 
-from config import DATA_DIR
+from config.paths import DATA_DIR
 
 
 def get_collision_data() -> pd.DataFrame:
