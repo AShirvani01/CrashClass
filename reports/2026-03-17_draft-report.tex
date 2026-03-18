@@ -1,0 +1,431 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage[margin=1in]{geometry}
+\usepackage[super, sort&compress]{natbib}
+\usepackage{hyperref}
+\usepackage[symbol]{footmisc}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{subfig}
+\usepackage[T1]{fontenc}
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries\scshape}{\thesection}{1em}{\MakeTitlecase}
+
+
+
+\title{\bfseries\scshape Fatality Risk Prediction in Toronto Motor Vehicle Collisions using Gradient Boosting Decision Trees [DRAFT]}
+\author{Abtin Kit Shirvani}
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+    Motor vehicle collision (MVC) fatalities remain a leading cause of preventable mortality in Canada despite ongoing Vision Zero initiatives, motivating the need for accurate, location-specific risk prediction tools to guide policy interventions. This study develops a calibrated fatality risk prediction model for Toronto MVCs using Gradient Boosting Decision Trees (GBDTs) with imbalance-targeted loss functions, applied to 6,835 serious collision events drawn from the Toronto Police Service Killed or Seriously Injured dataset (2006–present), of which 13.9\% were fatal. Four loss functions — weighted log loss, focal loss, logit-adjusted loss, and label-distribution-aware margin (LDAM) loss — were evaluated across three GBDT implementations using five-fold stratified cross-validation with PR-AUC as the primary metric. CatBoost trained with LDAM loss achieved the best performance, with a test PR-AUC of 0.341, representing a 0.202 improvement over the naive classifier baseline. Post-hoc Platt scaling substantially improved probability calibration, reducing the expected calibration error from 0.255 to 0.007. SHAP-based feature attribution identified impact type, district, calendar year, number of persons involved, and time of day as the strongest predictors of fatality risk. Most associations were consistent with the established road safety literature; a notable exception was a negative association between cyclist-involved collisions and fatality risk, attributed to confounding by road type and cycling infrastructure in lower-speed urban districts. Decision curve analysis demonstrated consistent positive net benefit over treat-all and treat-none strategies across policy-relevant threshold probabilities, with greatest practical value under resource-constrained intervention settings. All risk estimates are conditional on a collision having occurred and should not be interpreted as causal effects. These findings support the value of calibrated, location-specific ML models as complements to traditional statistical approaches in road safety research and policy.
+\end{abstract}
+
+\section{Introduction}
+
+Despite national Vision Zero road safety initiatives, motor vehicle collisions (MVCs) remain one of the leading preventable causes of premature mortality in Canada.\cite{Yao2019-ss} Beyond the human toll, MVCs also create substantial economic burdens. The Treasury Board of Canada Secretariat estimated the cost of a single traffic fatality at over 8 million CAD in 2010, equivalent to approximately 11 million CAD in 2026.\cite{transport2020socialcosts} These impacts highlight the need for prediction models capable of identifying high-risk populations to inform cost-effective policy interventions.
+
+Traditionally, road safety research has relied on classical statistical approaches such as logistic and probit regression. While effective in many applications, these models often struggle to capture the non-linear relationships and complex feature interactions characteristic of crash data — including, for example, the interplay between road geometry, weather conditions, and driver behaviour that may jointly elevate fatality risk in ways that additive models cannot adequately represent. Recent advances in machine learning (ML) have enabled more flexible modelling of such relationships, leading to greater predictive performance.\cite{Butt2025-ok} Among these methods, Gradient Boosting Decision Trees (GBDTs) generally produce the best predictive performance on structured data in binary classification tasks.\cite{MLbenchmark, schmitt2022deeplearningvsgradient,Henckaerts2021-vo, Mulugeta2023-or} This predictive strength comes at the cost of probability calibration and interpretability, which must be addressed to produce reliable risk estimates.
+
+Another challenge is the rarity of fatalities in crash data. Sampling techniques such as SMOTE\cite{smote} and ADASYN\cite{adasyn} have shown moderate success in improving minority class performance, but are prone to overfitting with high-dimensional data, as synthetic minority samples may introduce noise or overlap with the majority class.\cite{smote_limit} An alternative approach is to modify the learning objective itself through loss functions tailored to imbalanced data, which can be readily implemented within the GBDT framework without augmenting training data.
+
+Prior research has established several behavioural, infrastructural, and environmental risk factors associated with crash severity, including speeding, seatbelt use, impact type, road surface conditions, and road geometry. However, their effects can vary in magnitude and even direction depending on local infrastructure, enforcement patterns, and population behaviour, meaning that findings from other jurisdictions may not transfer reliably to Toronto.\cite{safety_across_communities} Despite the vast body of international research on crash severity prediction, relatively few studies have focused specifically on Toronto collision data, and existing work has largely emphasized classification rather than calibrated risk estimation. Whether established risk factors identified in the broader literature hold in the Toronto context — and with what relative magnitude - remains an open question that location-specific modelling can help address.\\
+
+\noindent The main contributions of this paper are as follows:
+\begin{enumerate}
+    \item Evaluated imbalance-targeted loss functions within several GBDT frameworks for crash fatality prediction — a domain where such approaches have received limited systematic attention despite the prevalence of severe class imbalance.
+    \item Applied post-hoc calibration to produce reliable risk estimates rather than rankings or binary classifications, enabling more principled policy-relevant inference.
+    \item Conducted a Toronto-specific analysis using SHAP-based feature attribution to characterize associations between crash features and fatality risk.
+\end{enumerate}
+It is important to note that, as this study relies on observational crash records, SHAP attributions reflect associations in the data and should not be interpreted as causal effects. Together, these contributions aim to produce accurate fatality risk predictions and exploratory insights that may inform future road safety research and policy interventions in Toronto.
+
+The remainder of this paper is structured as follows. \hyperref[sec:Data]{Section 2} describes the collision dataset and data preprocessing procedures. \hyperref[sec:Methodology]{Section 3} outlines the modelling framework, including loss functions, model training, post-hoc calibration, and decision curve analysis. \hyperref[sec:Results]{Section 4} presents the empirical results and discusses model performance, SHAP interpretations, and decision curve analysis. \hyperref[sec:Conclusion]{Section 5} concludes with a summary of findings, limitations, and directions for future research.
+
+
+
+\section{Data}
+\label{sec:Data}
+\subsection{Data Sources}
+
+The Killed or Seriously Injured Collisions dataset was sourced from the Toronto Police Service Public Safety Data Portal and contains all reported Toronto MVCs since 2006 in which a person sustained a major or fatal injury.\cite{dataset} A major injury is defined as a non-fatal injury severe enough to require hospital admission, including fractures, internal injuries, severe lacerations, crushing, burns, concussion, and severe shock. A fatal injury is defined as sustaining bodily injuries resulting in death within 365 days as a result of the collision.\footnote{Does not include death from natural causes (e.g. heart attack, stroke, epilated seizure, etc.) or suicide.} Each record captures the geographic location of the collision\footnote{Exact crash locations were offset to the nearest intersection for privacy concerns.}, environmental conditions at the time of the crash, ages of involved individuals, vehicle types and actions, manoeuvres performed, injury severity, and accident classification as either \texttt{Fatal} or \texttt{Non-Fatal}.
+
+Two complementary geospatial datasets were incorporated to support imputation and feature engineering. Road infrastructure data providing street-level spatial information and road classification were obtained from Statistics Canada's road network repositories,\cite{roads} and hospital locations were sourced from the Ontario Ministry of Health's publicly available GeoHub.\cite{hospitals} All public datasets in this study were used in compliance with the Open Government Licence – Ontario v1.1 and Open Government Licence – Canada v2.0, which permit free use, modification, and distribution with appropriate attribution.\cite{olg-on, olg-can}
+
+\subsection{Data preparation}
+
+Each observation in the KSI Collisions dataset corresponds to each person involved in the collision, regardless of the level of injury. Since the prediction target in this study is collision-level fatality risk rather than individual injury outcome, records were aggregated into unique events by grouping on three identifiers: accident number, recorded date-time, and geospatial coordinates. To preserve information during the aggregation, features that varied across individuals in the collision (i.e. Involved ages, Driver action, Manoeuver) were transformed from long to wide format.
+
+Collisions recorded outside the City of Toronto, as indicated by \texttt{NSA} (Not Specified Area) neighbourhood labels, were omitted. Missing feature values were imputed, where applicable, using the road infrastructure data or from nearby collisions based on spatial or temporal proximity. Features with minimal missing data were assigned to a pre-existing \texttt{Unknown} category, while features with extensive missingness or limited interpretability were excluded. To reduce dimensionality and prevent unstable parameter estimates, rare categories were consolidated into an \texttt{Other} category.
+
+Missing accident class labels were imputed using the highest recorded injury severity in each collision; events with at least 1 fatality were labelled \texttt{Fatal}, while those with only non-fatal injuries (given no missing injury data) were labelled \texttt{Non-Fatal}. The sparse \texttt{Property Damage Only} accident class was consolidated with \texttt{Non-Fatal} to keep the classification binary, as these accidents still contained major injuries despite their label. Injury severity was used only for imputation and was excluded from model features to prevent data leakage.
+
+Temporal features (Month, Day of week, Hour) were encoded using sine and cosine transformations to preserve their cyclical structure. To capture potential differences in emergency care accessibility, the distance to the nearest emergency department along with the associated hospital name were added as features. Distance was computed using Manhattan ($L^1$) geometry to more closely resemble grid-like city driving. Spatial joins and distance calculations were performed using the NAD83 Canadian Spatial Reference System (EPSG:2958).
+
+The final dataset consisted of 6,835 collision events, of which 951 (13.9\%) were fatal and 5,884 (86.1\%) were non-fatal. Data were partitioned using stratified sampling into training (80\%), calibration (10\%), and test (10\%) sets.
+
+
+\section{Methodology}
+\label{sec:Methodology}
+
+The modelling pipeline consists of four stages: (1) GBDT training with custom loss functions designed for imbalanced data, (2) post-hoc probability calibration, (3) SHAP-based feature attribution, and (4) decision curve analysis to evaluate practical utility. Each stage is described in the subsections that follow. A brief theoretical treatment of the GBDT algorithm is provided first to ground the subsequent methodological choices.
+
+\subsection{GBDT Theory}
+The core idea of boosting is to iteratively build an ensemble of weak models, with each new model targeting the errors of the previous one. Given enough iterations, this correction process can lead to a surprisingly strong model. GBDTs are a specific type of boosting where the models being fit are decision trees, and the errors from the previous models are calculated using the gradient of a loss function. Several widely-used GBDT implementations have emerged in recent years, including XGBoost\cite{XGBoost}, LightGBM\cite{LightGBM}, and CatBoost\cite{CatBoost}, each introducing computational optimizations while sharing the theoretical foundations established by Jerome H. Friedman.\cite{Friedman_GBM, Friedman_StochasticGBM}
+
+\subsubsection*{Initialization}
+Given a collection of i.i.d. training samples $\{(\mathbf{x}_i, y_i)\}_{i=1}^n$, where each $\mathbf{x}_i \in \mathcal{X}$ is a high-dimensional feature vector and $y_i \in \{0,1\}$ is its corresponding label, the prediction model at the $m^{\text{th}}$ iteration is defined as $F_m: \mathcal{X} \to \mathbb{R}$. The loss function measuring prediction error is denoted $\mathcal{L}(\gamma, y_i)$ for all $i=1,\dots,n$, where $\gamma \in \mathbb{R}$ denotes the log-odds (logit) of the probability estimate and $\mathcal{L}$ is a differentiable loss function to be specified (see \hyperref[subsec:loss]{Section 3.3} for details). The model is initialized with a constant log-odds value that minimizes total training loss:
+\begin{equation}
+    F_0(\mathbf{x}) = \underset{\gamma}{\arg\!\min} \sum_{i=1}^{n} \mathcal{L}(\gamma, y_i)
+\end{equation}
+
+\subsubsection*{Iterative Updates}
+To measure the error of the previous iteration, we compute $n$ pseudo-residuals using the negative gradient of the loss function with respect to the previous model's predictions:
+\begin{equation}
+    r_{im}=-\left[\frac{\partial \mathcal{L}(F(\textbf{x}_i),y_i)}{\partial F(\textbf{x}_i)}\right]_{F(\textbf{x})=F_{m-1}(\textbf{x})},\quad \text{for all } i=1,...,n
+\end{equation}
+where $\frac{\partial \mathcal{L}(F(\textbf{x}_i),y_i)}{\partial F(\textbf{x}_i)}$ is the loss function gradient, calculated using the log-odds estimates of the previous iteration. The intuition behind taking the negative gradient of the loss function being that we move towards the minimum of the loss function. These pseudo-residuals are then used to fit a regression tree (the current iteration's model). We denote the leaves (terminal regions) for the newly fitted regression tree as $R_{jm}$ for $j=1,...,J_m$ where $J_m$ is the total number of leaves, and compute a new log-odds estimate ($\gamma_{jm}$) for each leaf:
+\begin{equation}
+    \gamma_{jm}=\underset{\gamma}{\arg\!\min} \sum_{i:\textbf{x}_i \in R_{jm}}\mathcal{L}(F_{m-1}(\textbf{x}_i)+\gamma,y_i)
+    \label{min}
+\end{equation}
+
+The minimization problem in \eqref{min} can be solved using various numerical optimization techniques such as line search or Newton-Raphson's method. One simple yet effective approach widely adopted in modern GBDT implementations is the second-order Taylor approximation of the objective function.\cite{XGBoost, LightGBM,CatBoost} This approach works well because (a) the learning rate ensures small enough step sizes to maintain the validity of the approximations and (b) the loss function rarely has an analytically tractable solution, making a closed-form approximation particularly valuable. The ensemble is then updated using the log-odds estimates of the previous iteration:
+\begin{equation}
+    F_m(\textbf{x}_i)=F_{m-1}(\textbf{x}_i)+\nu \sum_{j=1}^{J_m}\gamma_{jm}\mathbb{I}(\textbf{x}_i \in R_{jm}),\quad \text{for all } i = 1,\dots,n
+\end{equation}
+where $\nu$ is the learning rate, which shrinks each tree's contribution to reduce overfitting. After $M$ iterations, the final classification is determined using the last predicted probabilities, $\hat p_i=\frac{e^{F_M(\textbf{x}_i)}}{1+e^{F_M(\textbf{x}_i)}}$, with some cutoff threshold, $c \in (0,1)$:
+\begin{equation}
+  \hat y_i =
+    \begin{cases}
+      1 & \hat p_i\ge c\\
+      0 & otherwise\\
+    \end{cases}       
+\end{equation}
+
+\subsection{Model Training}
+\paragraph{Algorithm Selection.}
+GBDTs were chosen for their strong predictive performance on structured data and their demonstrated advantages over classical statistical methods and other ML approaches in binary classification tasks.\cite{MLbenchmark, schmitt2022deeplearningvsgradient,Henckaerts2021-vo, Mulugeta2023-or} GBDTs are particularly effective when complex, non-linear relationships exist and sufficient training data is available, however what is considered \textit{sufficient} varies across domains. Benchmark studies and applications in related fields suggest that GBDTs typically outperform classical methods when sample sizes reach the order of thousands to tens of thousands.\cite{Alabi2025-ct, Seto2022-hf, Silvey2024SampleSize} While no widely cited traffic safety study defines a universal sample-size threshold, several have reported strong predictive performance with as few as 1,200 observations, supporting the applicability of GBDTs to moderate-sized collision datasets.\cite{systems14010104, Mengistu2025EthiopiaSeverity} State-of-the-art neural network architectures can achieve comparable results on tabular data, however they typically require larger datasets and can be more sensitive to skewed feature distributions and other dataset irregularities relative to GBDTs.\cite{mcelfresh2024neuralnetsoutperformboosted}
+
+\paragraph{Hyperparameter Tuning.}
+Hyperparameter tuning was performed using 10 rounds of Optuna's Bayesian TPE\footnote{Tree-structured Parzen Estimator} sampling algorithm to balance exploration of the parameter space and computational cost.\cite{akiba2019optunanextgenerationhyperparameteroptimization} The search space included the following GBDT parameters: tree depth, learning rate, $L_2$ leaf regularization, random subspace method (RSM), and class weights. Early stopping was set to 100 rounds to prevent overfitting. All tuning was conducted within the cross-validation framework to ensure unbiased performance estimates.
+
+\paragraph{Cross-Validation.}
+Model performance was evaluated using 5-fold stratified cross-validation. Class weights were applied to mitigate bias towards the majority (non-fatal) class. Several custom loss functions designed for imbalanced datasets, along with log loss, were evaluated using Precision-Recall Area Under the Curve (PR-AUC) as the primary performance metric. PR-AUC was favoured over other common evaluation metrics (e.g. Log-loss, $F_1$, AUC) for its threshold independence and robustness against class imbalance.\cite{PR-AUC1, PR-AUC2}
+% Decision threshold optimization was omitted in the main analysis, as the primary objective of the model was risk prediction (see Appendix \ref{appendix: decision threshold optimization}).
+
+\subsection{Loss Functions}
+\label{subsec:loss}
+Loss function gradients were computed using automatic differentiation from PyTorch's \texttt{autograd} package. All losses include class weight parameters $\boldsymbol{\alpha}=[\alpha_0, \alpha_1]^T \in \mathbb{R}^2_{>0}$, where $\alpha_1$ upweights the minority (fatal) class, and were tuned jointly with other hyperparameters during cross-validation. Implementation details can be found in Appendix \ref{appendix:derivations}. The following losses were considered:
+
+\paragraph{Weighted Log Loss.}
+Logarithmic loss (also known as Cross-Entropy or Log loss) is a widely used loss function for classification tasks, penalizing predictions in proportion to their deviation from the true label. Under class imbalance, misclassification of the majority class tends to dominate the total loss, overshadowing errors in the minority class.\cite{logloss1} Class-weighted log loss addresses this by scaling each term by a class-specific weight:\cite{logloss2, logloss3}
+$$\mathcal{L}_{Log}(\hat p_i, y_i; \boldsymbol{\alpha})=-\left[\alpha_1\cdot y_i\log(\hat p_i) + \alpha_0 \cdot(1-y_i)\log(1-\hat p_i)\right]$$
+where $\hat p_i\in(0,1)$ is the $i^{th}$ predicted probability for class 1, and $y_i\in\{0,1\}$ is the $i^{th}$ true label.
+
+\paragraph{Focal Loss.}
+Focal loss is an extension of Log loss designed to address class imbalance by down-weighting the contribution of easily classified observations. \cite{focal} The loss reduces the influence of high-confidence predictions (where $\hat p_i \approx y_i$), forcing the model to prioritize misclassified or uncertain samples:
+$$\mathcal{L}_{Focal}(\hat p_i, y_i; \boldsymbol{\alpha}, \gamma)=-\left[\alpha_1 \cdot(1-\hat p_i)^\gamma \cdot y_i\log(\hat p_i) + \alpha_0 \cdot \hat p_i^\gamma \cdot (1-y_i)\log(1-\hat p_i)\right]$$
+where $\gamma \ge 0$ controls the down-weighting. At $\gamma=0$, focal loss reduces to weighted log loss.
+
+\paragraph{Logit-Adjusted Loss.}
+Rather than reweighting the loss terms, Logit-Adjusted (LA) loss directly modifies the raw logits (log-odds) using the a priori class probabilities.\cite{LA} This effectively places a penalty on the majority class logit, and a boost on the minority class logit, counteracting bias towards the majority class:
+$$
+\mathcal{L}_{LA}(z_i, y_i ;\boldsymbol{\alpha}, \tau) = - \left[\alpha_1 \cdot y_i \log\left(\sigma(z_i + \tau \log \frac{\pi_1}{\pi_0})\right) + \alpha_0 \cdot (1-y_i) \log\left(1-\sigma(z_i + \tau \log\frac{\pi_1}{\pi_0})\right) \right]
+$$
+where $\sigma(\cdot)$ is the sigmoid function\footnote{The LA paper uses softmax; in the binary case, it can be simplified to a sigmoid.}, $z_i$ is the raw logit for the $i^{th}$ sample, $\pi_0, \pi_1$ are the a priori probabilities for majority and minority classes respectively, and $\tau\ge0$ controls the strength of the adjustment. Setting $\tau=1$ comes with the added theoretical guarantee that the model converges towards the Bayes-optimal classifier for balanced error.\cite{LA}
+
+\paragraph{Label-Distribution-Aware-Margin Loss.}
+Similar to LA loss, Label-Distribution-Aware-Margin (LDAM) loss directly modifies the raw logits, but instead uses a class-dependent offset term derived from the training set size of each class.\cite{LDAM} This also effectively shifts the decision boundary towards the majority class:
+$$\mathcal{L}_{LDAM}(z_i, y_i ;\boldsymbol{\alpha}, C) = - \left[\alpha_1 \cdot y_i \log\left(\sigma(z_i - \frac{C}{\sqrt[4]{n_1}})\right) + \alpha_0 \cdot (1-y_i) \log\left(1-\sigma(z_i + \frac{C}{\sqrt[4]{n_0}})\right) \right]
+$$
+where $C>0$ is a tunable margin scaling parameter and $n_0,n_1$ denote the number of training samples for majority and minority classes, respectively.
+
+\subsection{Calibration}
+Even when trained using proper scoring rules, GBDTs tend to produce poorly calibrated probability estimates; post-hoc calibration can substantially improve their reliability without retraining.\cite{Caruana2006} Prior work has shown that calibrated GBDTs can achieve lower Brier scores and expected calibration errors (ECE) than both generalized linear models and deep learning approaches in clinical and actuarial settings.\cite{Alabi2025-ct, fonseca2017calibrationmachinelearningclassifiers}
+
+Common calibration methods include Platt scaling, isotonic regression, beta calibration, and temperature scaling, with relative performances varying across classifiers and datasets.\cite{manokhin2026classifiercalibrationscaleempirical} In this study, Platt scaling\textemdash which fits a logistic regression model to the raw GBDT outputs\textemdash was selected for its low computational cost and robust performance with limited calibration data.\cite{guo2017calibrationmodernneuralnetworks, pmlr-v54-kull17a, Boken2021-ug}
+The logistic assumption underlying Platt scaling was verified empirically on the validation set outputs (See Appendix \ref{appendix:figures}). To prevent data leakage, the calibration model was trained on a held-out calibration set, using the \texttt{netcal} package. Performance was assessed using ECE and Brier score, alongside reliability plots.
+
+\subsection{SHAP}
+SHAP (SHapley Additive exPlanations) values were computed to characterize the association between each feature and predicted fatality risk.\cite{lundberg2017unifiedapproachinterpretingmodel} SHAP borrows concepts from game theory to provide some global and local inference on features used in the model. Although an effective tool, SHAP scores are susceptible to correlated features and unmeasured confounders as with most models, and therefore should \textit{not} be interpreted causally. To mitigate the effect of correlated features, hierarchical clustering was performed using Gower distance, which accommodates mixed-type variables, to group and summarize highly correlated features prior to computing SHAP values.
+
+\subsection{Decision Curve Analysis}
+Decision curve analysis (DCA) was used to evaluate the practical utility of the prediction model across a range of decision thresholds.\cite{Vickers2006-ok} DCA quantifies the net benefit of acting on model predictions relative to two default strategies\textemdash treating all individuals as high-risk or none\textemdash by weighting true positives against false positives according to the implicit harm-benefit trade-off encoded in each threshold. While DCA is most prevalent in clinical research, it generalizes naturally to public safety and policy contexts where interventions carry costs and the appropriate risk threshold is uncertain. The final DCA curve was smoothed for visualization purposes only.
+
+
+
+\section{Results and Discussion}
+\label{sec:Results}
+\subsection{Model selection}
+Table \ref{cv_results} summarizes cross-validation performance across algorithms and loss functions on the training set using PR-AUC as the evaluation metric. The parity of cross-validation scores suggests that further performance gains are more likely to arise from additional data or feature engineering rather than changes in model architecture. Minor performance differences across models may also be attributable to the non-exhaustive nature of the hyperparameter search. CatBoost paired with LDAM loss was selected as the final model for its high mean PR-AUC and stability across folds ($0.312 \pm 0.017$). CatBoost models showed a greater tendency toward overfitting than XGBoost and LightGBM, possibly due to the algorithm’s method of data-partitioning during training along with the low prevalence of fatal outcomes; the relatively low standard error of the LDAM configuration suggests this was adequately controlled in the selected model.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Cross-validation PR-AUC across algorithms and loss functions (mean $\pm$ standard error over 5 folds)}
+    \label{cv_results}
+    \begin{tabular}{lllll}
+        \toprule
+         \textbf{Algorithm} & \textbf{Log loss} & \textbf{LDAM} & \textbf{Focal loss} & \textbf{LA}\\
+         \midrule
+         CatBoost & $0.304 \pm 0.023$ & $\mathbf{0.312 \pm 0.017}$* & $0.286 \pm 0.021$ & $0.261 \pm 0.024$\\
+         XGBoost & $0.257 \pm 0.010$ & $0.243 \pm 0.013$ & $0.265 \pm 0.008$ & $0.276 \pm 0.008$ \\
+         LightGBM & $0.253 \pm 0.030$ & $0.266 \pm 0.026$ & $0.235 \pm 0.017$ & $0.234 \pm 0.019$\\
+        \bottomrule
+        \multicolumn{5}{l}{\small \textit{*Highest mean PR-AUC}}
+    \end{tabular}
+\end{table}
+
+On the held-out test set, the model achieved a PR-AUC of 0.341 (Figure \ref{pr plot}), representing a 0.202 improvement over the baseline performance of a naive classifier (0.139). While this result confirms that the model captures meaningful signals in the data, PR-AUC values in this range are characteristic of fatality prediction tasks with severe class imbalance and reflect the inherent difficulty of discriminating rare fatal outcomes from a heterogeneous pool of serious collisions. The result should therefore be interpreted as evidence of useful discriminative ability rather than a high-confidence risk stratification tool.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/PRAUC plot.png}
+    \caption{Precision-Recall curve for the final model on the held-out test set. The dashed line indicates the naive classifier baseline equal to the fatality prevalence rate (0.139).}
+    \label{pr plot}
+\end{figure}
+
+\subsection{Calibration}
+
+Post-hoc calibration substantially improved the reliability of predicted probabilities. As shown in Table~\ref{metrics}, Platt scaling reduced the Brier score from 0.180 to 0.108 ($\Delta = 0.072$) and the ECE from 0.255 to 0.007 ($\Delta = 0.248$). Since PR-AUC depends only on the relative ranking of predictions and is invariant to monotonic probability transformations, it is reported only for the uncalibrated model.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Discrimination and calibration metrics for the final model on the held-out test set, before and after Platt scaling}
+    \begin{tabular}{lcc}
+        \toprule
+          \textbf{Metric} & \multicolumn{2}{c}{\textbf{Value}} \\ \cmidrule{2-3}
+          & \textbf{Uncalibrated} & \textbf{Calibrated} \\
+         \midrule
+         PR-AUC & $0.341$ & \multicolumn{1}{c}{-} \\
+         Brier score & $0.180$ & $0.108$ \\
+         ECE & $0.255$ & $0.007$ \\
+        \bottomrule
+    \end{tabular}
+    \label{metrics}
+\end{table}
+
+Calibration performance of the final model is shown in Figure \ref{Calibration_plot}. Predicted probabilities were grouped into deciles of predicted risk, and observed fatality rates were computed within each bin. Due to low prevalence of fatalities, the axes were restricted to the range of predicted probabilities observed in the test set ($<0.4$). The curve is generally increasing, apart from a few oscillations in the low-to-mid risk range. Overestimation in the low-to-mid risk ranges may lead to conservative risk assessments, whereas mid-to-high risk scenarios may underestimate true risk. Moreover, upper tail estimates ($>0.25$) are likely to be less stable due to the rarity of fatal outcomes and the high variance of predicted probabilities within those bins, and should be interpreted accordingly. A comparison with the uncalibrated model is provided in Appendix \ref{appendix:figures}.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.6\linewidth]{figures/Calibration_test_plot.png}
+    \caption{Reliability diagram for the final model on the held-out test set. Predicted probabilities are grouped into deciles.}
+    \label{Calibration_plot}
+\end{figure}
+
+\subsection{Feature Importance and Associations}
+Figure \ref{SHAP} displays SHAP-based feature importance results for the final model. The bar plot (left) ranks the top 15 features by mean absolute SHAP value with a hierarchical clustering cutoff of 0.06, while the beeswarm plot (right) illustrates the distribution and direction of feature effects on model predictions. All associations reported below reflect patterns learned from observational data and should not be interpreted as causal effects. Unmeasured confounders and correlated features may influence the direction and magnitude of individual SHAP values.
+
+\begin{figure}[h]
+    \centering
+    \subfloat[\centering Mean absolute SHAP values]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_bar_plot.png} }}
+    \subfloat[\centering Beeswarm plot]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_beeswarm_plot.png} }}
+    \caption{SHAP feature importances for the final model. Bar plot (left) ranks features by mean absolute SHAP value; beeswarm plot (right) shows the distribution and direction of individual contributions.}
+    \label{SHAP}
+\end{figure}
+
+\subsubsection*{Collision Characteristics}
+Impact type (\texttt{IMPACTYPE}) was the most influential predictor in the model. As shown in Figure \ref{IMPACTYPE,DISTRICT}, pedestrian collisions and approaching impact types (encompassing T-bone and head-on collisions) were most strongly associated with elevated fatality risk, consistent with the established literature on collision kinematics.\cite{HUSSAIN2019241,Doecke2020} Slow-moving vehicle (SMV) collisions exhibited a similar positive association; while direct evidence is limited, this may partly reflect the typically greater mass of SMVs and the resulting geometric and force mismatch with lighter passenger vehicles\cite{YUAN2021154}, as well as the association between speed variability in traffic and higher impact velocities.\cite{Elvik2005}
+
+The finding that cyclist collisions were negatively associated with fatality risk contradicts the literature and warrants careful interpretation. Approximately 60\% of cyclist-involved collisions in the training set occurred within the City of Toronto and East York districts, where speed limits are lower and cycling infrastructure is most developed. This geographic concentration may suggest that the negative association is an artifact of confounding by road type, speed limit, and infrastructure quality rather than a reflection of true protective effects of cyclist involvement. This finding highlights the importance of including road-level covariates such as posted speed limits and cycling infrastructure indicators in future modelling efforts.
+
+The number of persons (\texttt{NUMPERSONS}) involved was positively associated with fatality risk, which may reflect the increased probability of at least one fatal outcome in higher-occupancy or multi-vehicle scenarios, or may serve as a proxy for collision severity.
+
+\begin{figure}[h]
+    \centering
+    \subfloat[\centering Impact Type with District]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_IMPACTYPE_DISTRICT.png} }}
+    \subfloat[\centering District with Year]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_DISTRICT.png} }}
+    \caption{SHAP dependence plots for Impact Type and District.}
+    \label{IMPACTYPE,DISTRICT}
+\end{figure}
+
+\subsubsection*{Temporal and Spatial Patterns}
+Calendar year (\texttt{YEAR}) showed a positive association with predicted fatality risk, such that more recent collisions were assigned higher risk estimates. This finding is difficult to interpret directly and may reflect several non-exclusive explanations: changes in data collection or reporting practices over time, increasing size and adoption of trucks,\cite{EDWARDS2022275} or residual temporal confounding not captured by other features. This association warrants further investigation and should be treated with caution in any policy application.
+
+The positive association of sinusoidal hour-of-day encoding (\texttt{HOUR\_sin}) with fatality risk corresponds to AM hours, suggesting elevated risk earlier in the day. As shown in Figure \ref{TRAFFCTL,LIGHT}, this pattern interacts with lighting conditions: dark, dusk, and dawn conditions were associated with higher predicted risk, while daylight was protective. Reduced visibility under low-light conditions is well-established as a contributing factor to crash severity,\cite{Plainis2006} and may additionally serve as a proxy for higher-risk behaviours such as speeding, fatigue, and substance use, which are more prevalent at night and in early morning hours.\cite{Liu2019}
+
+District was the second most influential feature overall, pointing to meaningful spatial heterogeneity in fatality risk across Toronto. Toronto and East York was the only district that showed a negative association with predicted fatality risk: road types and lower speed limits are the likely confounders for this effect.
+
+\subsubsection*{Road Environment and Traffic Control}
+Collisions at locations with no traffic control were associated with elevated fatality risk (Figure~\ref{TRAFFCTL,LIGHT}), likely because this category encompasses highway collisions where speeds and impact forces are substantially higher than on urban arterials. Correspondingly, collisions involving a left-turn manoeuvre showed a negative association, consistent with their predominant occurrence at signalized intersections rather than on high-speed roads. These two findings are likely capturing the same underlying highway versus urban road dimension rather than independent effects, and should be interpreted jointly.
+
+Speeding and truck involvement were among the features independently associated with increased predicted risk, consistent with the extensive literature documenting their effects on collision severity.\cite{Elvik2005, Farmer2016, EDWARDS2022275}
+
+\subsubsection*{Vulnerable Road Users}
+The presence of at least one individual aged 85–89 years was positively associated with fatality risk, consistent with well-documented age-related vulnerability to injury and mortality following trauma in older adults.\cite{Braver2004, LI2003227}
+
+
+
+\begin{figure}[h]
+    \centering
+    \subfloat[\centering Traffic Control Type with Left Turn Manoeuver]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_TRAFFCTL_MANOEUVER.png} }}
+    \subfloat[\centering Light with Hour sin]{{\includegraphics[width=0.5\textwidth]{figures/SHAP_LIGHT_HOUR.png} }}
+    \caption{SHAP dependence plots for traffic control and lighting conditions.}
+    \label{TRAFFCTL,LIGHT}
+\end{figure}
+
+
+
+\subsection{Decision Curve Analysis}
+As illustrated in Figure \ref{fig:decision_curve}, the final calibrated model demonstrates a consistent positive net benefit across relevant threshold probabilities, exceeding both the Intervention-for-all and Intervention-for-none curves. In this context, the threshold probability represents the minimum fatality risk at which a decision-maker would consider intervening: a lower threshold corresponds to a higher relative valuation of preventing fatalities versus avoiding unnecessary interventions.
+
+The model offers limited benefit at very low threshold probabilities ($<5\%$), where the treat-all strategy performs comparably. This reflects the cost structure of near-universal intervention: when a decision-maker is willing to intervene on nearly all collisions regardless of predicted risk, the model's risk stratification adds little practical value. The model's utility is greatest in the moderate-to-high threshold range, where budget constraints, high implementation costs, or political barriers make it important to concentrate interventions on the highest-risk scenarios. In such settings, the model provides meaningful guidance for targeting resources more efficiently than either naive alternative.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/Decision_curve.png}
+    \caption{Decision curve analysis for the final calibrated model. Net benefit is shown as a function of threshold probability for the model (blue), treat-all (orange), and treat-none (green) strategies.}
+    \label{fig:decision_curve}
+\end{figure}
+
+\section{Conclusion}
+\label{sec:Conclusion}
+This study developed a calibrated fatality risk prediction model for Toronto MVCs using CatBoost with LDAM loss, post-hoc Platt scaling calibration, SHAP-based feature attribution, and decision curve analysis to evaluate practical utility. The model achieved a test PR-AUC of 0.341, representing a notable improvement over the naive classifier baseline, and post-hoc calibration reduced the ECE from 0.255 to 0.007, yielding predicted probabilities suitable for risk interpretation.
+
+SHAP analysis identified impact type, calendar year, district, number of persons involved, and time of day as the most influential predictors of fatality risk. These associations are broadly consistent with the established road safety literature, with the notable exception of cyclist-involved collisions, which showed a negative association with fatality risk\textemdash a finding most plausibly explained by confounding between cyclist collision locations and lower-speed urban infrastructure rather than any protective effect of cyclist involvement. Decision curve analysis demonstrated that the calibrated model offers consistent positive net benefit over treat-all and treat-none strategies across a range of policy-relevant threshold probabilities, with greatest practical value in settings where budget constraints or implementation costs make targeted rather than universal intervention preferable.
+
+It is important to note that the estimated risks are conditional on a collision occurring. The marginal rate of fatal collisions in Toronto is only a few deaths per 100,000 people per year, which corresponds to a marginal risk that is orders of magnitude lower than the conditional risk.\cite{CityToronto2026VisionZeroFatalities} Maintaining this contextual grounding is essential for proper interpretation and communication of the results in any policy context.
+
+\subsection*{Limitations}
+
+\paragraph{Confounding and missing covariates.} SHAP values derived from observational data reflect statistical associations within the fitted model and are not causal estimates. Several known risk factors were absent from the feature set — most notably seatbelt use, which is well-established as one of the strongest determinants of fatality conditional on collision and whose omission may inflate or distort the estimated contributions of correlated features. Traffic density and congestion were also unrepresented, with temporal features serving only as indirect proxies. Incorporating complementary data sources that capture these factors directly would likely improve both predictive performance and the interpretability of feature attributions.
+
+\paragraph{Environmental data resolution.} Visibility and lighting features provided only qualitative representations of weather and illumination conditions. High-resolution meteorological data\textemdash including precise precipitation intensity and temperature measurements\textemdash would better capture the environmental dimensions of fatality risk and reduce the potential for unmeasured confounding in the lighting and time-of-day associations identified by SHAP.
+
+\paragraph{Calibration instability in the upper tail.} While Platt scaling substantially improved overall calibration, predicted probabilities above 0.25 exhibited greater instability due to the small number of fatal observations contributing to high-risk bins. This limits the reliability of the model's most extreme risk estimates, and practitioners should treat upper-tail predictions with appropriate caution.
+
+\paragraph{Uncertainty quantification.} Post-hoc calibration does not improve robustness against out-of-distribution inputs,\cite{ovadia2019trustmodelsuncertaintyevaluating} and the risk estimates produced here capture only aleatoric (first-order) uncertainty, i.e., the inherent randomness of the outcome given observed features. Epistemic uncertainty arising from model misspecification and data limitations is not quantified. As a result, the model may produce overconfident estimates for collision profiles that are underrepresented in the training data.
+
+\paragraph{Spatio-temporal dependence.} The modelling framework assumes independence between collision events, which is unlikely to hold given the well-documented spatial and temporal clustering of crashes.\cite{Spatio-temporal, Spatio-temporal-2} While dependence primarily affects statistical inference in parametric models, correlated events appearing across training and test splits may also produce overly optimistic performance estimates.\cite{dependence} This concern is partly mitigated by the use of stratified random splitting, but not fully addressed.
+
+\subsection*{Future Directions}
+The inclusion of known missing confounders such as seatbelt use, traffic volume, and road-level speed limit data represents the most direct path to improving model performance and the interpretability of SHAP attributions. Future data linkage efforts that incorporate these variables from complementary administrative or sensor sources would be a high-priority contribution.
+
+Calibration stability in high-risk regions could be improved through Bayesian calibration methods such as Bayesian Binning into Quantiles,\cite{BBQ} which are better suited than Platt scaling to the sparse data conditions that characterize the upper tail of the predicted risk distribution.
+
+Epistemic uncertainty could be addressed by adopting conformal prediction\cite{conformal}, credal sets, or Bayesian approaches that produce prediction intervals alongside point estimates, enabling decision-makers to assess not only predicted risk but also confidence in that prediction.
+
+The counterintuitive negative association between cyclist-involved collisions and fatality risk merits dedicated follow-up. Future work should explicitly incorporate road-level covariates such as cycling infrastructure indicators, posted speed limits, and road classification to separate the effect of cyclist involvement from the environmental context in which cyclist collisions disproportionately occur.
+
+Finally, a formal policy sensitivity analysis examining how changes in intervention thresholds, implementation costs, and the assumed value of a statistical life affect net benefit under the DCA framework would strengthen the translation of model outputs into actionable road safety policy recommendations.
+
+
+\section*{Supplementary Information}
+\subsubsection*{Availability of Data and Materials}
+The full data and code required to reproduce the results described in this study are available at the following GitHub repository: https://github.com/AShirvani01/CrashClass
+
+\subsubsection*{Attribution Statement}
+Contains information licensed under the Open Government Licence – Canada and Open Government Licence – Ontario.
+\subsubsection*{Competing Interests}
+The authors declare no conflicts of interest.
+
+
+
+\newpage
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+\newpage
+
+\appendix
+\section{Derivations}
+\label{appendix:derivations}
+This section provides derivations bridging the original multi-class formulations of the loss functions referenced in the main text and their binary implementations used in this study. In both cases, the key steps are defining $z := f_1(x) - f_0(x)$ as the log-odds and applying the identity $\sigma(-x) = 1 - \sigma(x)$.
+
+\subsection{Logit-Adjusted Loss}
+The multi-class LA loss is defined as:\cite{LA}
+\begin{equation*}
+    \mathcal{L}_{LA}(y, f(x)) = \alpha_y \cdot \log \left[1+\sum_{y'\ne y} 
+    e^{\tau\Delta_{yy'} + f_{y'}(x) - f_y(x)}\right], 
+    \quad \Delta_{yy'} = \log\!\left(\frac{\pi_{y'}}{\pi_y}\right)
+\end{equation*}
+In the binary case, the sum collapses to a single term. Evaluating at $y=1$ and $y=0$ respectively:
+\begin{align*}
+    \mathcal{L}_{LA}(1, f(x)) 
+        &= \alpha_1 \cdot \log \left[1+ e^{-\left(z + 
+           \tau\log\frac{\pi_1}{\pi_0}\right)}\right] 
+        = -\alpha_1 \cdot \log\, \sigma\!\left(z + 
+           \tau\log\frac{\pi_1}{\pi_0}\right) \\[6pt]
+    \mathcal{L}_{LA}(0, f(x)) 
+        &= \alpha_0 \cdot \log \left[1+ e^{z + 
+           \tau\log\frac{\pi_1}{\pi_0}}\right]
+        = -\alpha_0 \cdot \log\!\left[1-\sigma\!\left(z + 
+           \tau\log\frac{\pi_1}{\pi_0}\right)\right]
+\end{align*}
+Combining both cases yields the binary LA loss stated in 
+Section~\ref{subsec:loss}:
+\begin{equation*}
+    \mathcal{L}_{LA}(z_i, y_i ;\boldsymbol{\alpha}, \tau) = - \left[
+    \alpha_1 \cdot y_i \log\,\sigma\!\left(z_i + \tau \log \frac{\pi_1}{\pi_0}\right) 
+    + \alpha_0 \cdot (1-y_i) \log\!\left(1-\sigma\!\left(z_i + \tau 
+    \log\frac{\pi_1}{\pi_0}\right)\right) \right]
+\end{equation*}
+
+\subsection{Label-Distribution-Aware Margin Loss}
+The multiclass LDAM loss is defined as:\cite{LDAM}
+\begin{equation*}
+    \mathcal{L}_{LDAM}((x,y); f) = -\log \frac{e^{z_y - \Delta_y}}{e^{z_y - 
+    \Delta_y} + \sum_{j \ne y} e^{z_j}}, \qquad \Delta_j = \frac{C}{n_j^{1/4}}, 
+    \quad j \in \{1,\ldots,k\}
+\end{equation*}
+where $\Delta_j$ is a class-dependent margin that shrinks as class size $n_j$ grows, 
+enforcing a larger decision boundary for minority classes. In the binary case, 
+dividing numerator and denominator by $e^{z_y - \Delta_y}$ and evaluating at $y=1$ 
+and $y=0$ respectively:
+\begin{align*}
+    \mathcal{L}_{LDAM}((x,1); f) 
+        &= -\log \frac{1}{1 + e^{-(z-\Delta_1)}}
+        = -\log\,\sigma\!\left(z - \frac{C}{\sqrt[4]{n_1}}\right) \\[6pt]
+    \mathcal{L}_{LDAM}((x,0); f) 
+        &= -\log \frac{1}{1 + e^{z+\Delta_0}}
+        = -\log\,\sigma\!\left(-z - \frac{C}{\sqrt[4]{n_0}}\right)
+        = -\log\!\left[1 - \sigma\!\left(z + \frac{C}{\sqrt[4]{n_0}}\right)\right]
+\end{align*}
+Incorporating class weights and combining both cases yields the binary LDAM loss 
+stated in Section~\ref{subsec:loss}:
+\begin{equation*}
+    \mathcal{L}_{LDAM}(z_i, y_i;\boldsymbol{\alpha}, C) = -\left[
+        \alpha_1 \cdot y_i \log\,\sigma\!\left(z_i - \frac{C}{\sqrt[4]{n_1}}\right) 
+        + \alpha_0\cdot(1-y_i)\log\!\left(1-\sigma\!\left(z_i+
+        \frac{C}{\sqrt[4]{n_0}}\right)\right)\right]
+\end{equation*}
+
+\newpage
+\section{Calibration Diagnostics}
+\label{appendix:figures}
+
+Figure~\ref{fig:calib_val} shows the uncalibrated model outputs on the validation 
+set. The broadly monotonic increasing trend between predicted scores and observed 
+fatality rates provides empirical support for the logistic assumption underlying 
+Platt scaling. Figure~\ref{fig:calib_test} compares reliability diagrams before 
+and after calibration on the held-out test set.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.5\linewidth]{Appendix figures/Calibration_uncalibrated_val_plot.png}
+    \caption{Reliability diagram for the uncalibrated model on the validation set. 
+    The monotonic increasing trend between predicted scores and observed fatality 
+    rates supports the logistic assumption for Platt scaling.}
+    \label{fig:calib_val}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \subfloat[Uncalibrated]{{\includegraphics[width=0.5\textwidth]
+        {Appendix figures/Calibration_uncalibrated_test_plot.png}}}
+    \subfloat[Calibrated]{{\includegraphics[width=0.5\textwidth]
+        {Appendix figures/Calibration_unzoomed_test_plot.png}}}
+    \caption{Reliability diagrams before and after Platt scaling on the held-out 
+    test set. Calibration substantially reduces systematic over- and 
+    underestimation across the predicted probability range.}
+    \label{fig:calib_test}
+\end{figure}
+
+\end{document}
